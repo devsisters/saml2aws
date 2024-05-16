@@ -40,6 +40,7 @@ func PromptForConfigurationDetails(idpAccount *cfg.IDPAccount) error {
 	idpAccount.Profile = prompter.String("AWS Profile", idpAccount.Profile)
 
 	idpAccount.URL = prompter.String("URL", idpAccount.URL)
+	idpAccount.TencentCloudURL = prompter.String("TencentCloud URL (Optional)", idpAccount.TencentCloudURL)
 	idpAccount.Username = prompter.String("Username", idpAccount.Username)
 
 	switch idpAccount.Provider {

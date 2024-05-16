@@ -19,6 +19,7 @@ type CommonFlags struct {
 	MFAIPAddress          string
 	MFAToken              string
 	URL                   string
+	TencentCloudURL       string
 	Username              string
 	Password              string
 	RoleArn               string
@@ -62,6 +63,10 @@ func ApplyFlagOverrides(commonFlags *CommonFlags, account *cfg.IDPAccount) {
 
 	if commonFlags.URL != "" {
 		account.URL = commonFlags.URL
+	}
+
+	if commonFlags.TencentCloudURL != "" {
+		account.TencentCloudURL = commonFlags.TencentCloudURL
 	}
 
 	if commonFlags.Username != "" {
