@@ -43,7 +43,7 @@ func TestAssignPrincipals(t *testing.T) {
 		},
 	}
 
-	awsAccounts := []*AWSAccount{
+	awsAccounts := []*CloudAccount{
 		{
 			Roles: []*CloudRole{
 				{

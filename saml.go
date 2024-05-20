@@ -2,7 +2,6 @@ package saml2aws
 
 import (
 	"fmt"
-	"log"
 	"strconv"
 	"time"
 
@@ -143,14 +142,14 @@ func ExtractCloudRoles(data []byte) ([]string, error) {
 		return cloudroles, err
 	}
 
-	log.Printf("root tag: %s", doc.Root().Tag)
+	// log.Printf("root tag: %s", doc.Root().Tag)
 
 	assertionElement := doc.FindElement(".//Assertion")
 	if assertionElement == nil {
 		return nil, ErrMissingAssertion
 	}
 
-	log.Printf("tag: %s", assertionElement.Tag)
+	// log.Printf("tag: %s", assertionElement.Tag)
 
 	// Get the actual assertion attributes
 	attributeStatement := assertionElement.FindElement(childPath(assertionElement.Space, attributeStatementTag))
@@ -158,7 +157,7 @@ func ExtractCloudRoles(data []byte) ([]string, error) {
 		return nil, ErrMissingElement{Tag: attributeStatementTag}
 	}
 
-	log.Printf("tag: %s", attributeStatement.Tag)
+	// log.Printf("tag: %s", attributeStatement.Tag)
 
 	attributes := attributeStatement.FindElements(childPath(assertionElement.Space, attributeTag))
 	for _, attribute := range attributes {
@@ -166,11 +165,11 @@ func ExtractCloudRoles(data []byte) ([]string, error) {
 			continue
 		}
 
-		if attribute.SelectAttrValue("Name", "") == "https://aws.amazon.com/SAML/Attributes/Role" {
-			log.Printf("found aws assertion")
-		} else if attribute.SelectAttrValue("Name", "") == "https://cloud.tencent.com/SAML/Attributes/Role" {
-			log.Printf("found tencent assertion")
-		}
+		// if attribute.SelectAttrValue("Name", "") == "https://aws.amazon.com/SAML/Attributes/Role" {
+		// 	log.Printf("found aws assertion")
+		// } else if attribute.SelectAttrValue("Name", "") == "https://cloud.tencent.com/SAML/Attributes/Role" {
+		// 	log.Printf("found tencent assertion")
+		// }
 
 		atributeValues := attribute.FindElements(childPath(assertionElement.Space, attributeValueTag))
 		for _, attrValue := range atributeValues {

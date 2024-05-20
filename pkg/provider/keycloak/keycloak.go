@@ -17,6 +17,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/versent/saml2aws/v2/pkg/cfg"
+	"github.com/versent/saml2aws/v2/pkg/cloud"
 	"github.com/versent/saml2aws/v2/pkg/creds"
 	"github.com/versent/saml2aws/v2/pkg/prompter"
 	"github.com/versent/saml2aws/v2/pkg/provider"
@@ -58,7 +59,7 @@ func (kc *Client) Authenticate(loginDetails *creds.LoginDetails) (string, error)
 	return kc.doAuthenticate(&authContext{loginDetails.MFAToken, 0, true}, loginDetails)
 }
 
-// XXX(changwon): Retrieve "multiple" SAML responses from all configured providers
+// NOTE(devsisters): Retrieve "multiple" SAML responses from all configured providers
 func (kc *Client) doAuthenticate(authCtx *authContext, loginDetails *creds.LoginDetails) (string, error) {
 	awsAuthSubmitURL, awsAuthSubmitForm, err := kc.getLoginForm(loginDetails)
 	if err != nil {
@@ -67,6 +68,8 @@ func (kc *Client) doAuthenticate(authCtx *authContext, loginDetails *creds.Login
 	if awsAuthSubmitURL == "" {
 		return "", errors.Wrap(err, "error retrieving aws login url from idp")
 	}
+
+	// log.Println(awsAuthSubmitURL)
 
 	awsdata, err := kc.postLoginForm(awsAuthSubmitURL, awsAuthSubmitForm)
 	if err != nil {
@@ -109,71 +112,31 @@ func (kc *Client) doAuthenticate(authCtx *authContext, loginDetails *creds.Login
 	if err != nil && authCtx.authenticatorIndexValid && passwordValid(awsdoc) {
 		return kc.doAuthenticate(authCtx, loginDetails)
 	}
-	log.Println("SAML response successfully retrieved for AWS")
-	log.Println(awsSamlResponse)
+	// log.Println("SAML response successfully retrieved for AWS")
+	// log.Println(awsSamlResponse)
 
 	// If configured, retrieve TencentCloud SAML Response with the same authCtx
 	if loginDetails.TencentCloudURL != "" {
-		tcAuthSubmitURL, tcAuthSubmitForm, err := kc.getLoginForm(loginDetails)
+		tcdoc, err := kc.getAdditionalLoginForm(loginDetails.TencentCloudURL)
 		if err != nil {
 			return "", errors.Wrap(err, "error retrieving tencentcloud login form from idp")
-		}
-		if tcAuthSubmitURL == "" {
-			return "", errors.Wrap(err, "error retrieving tencentcloud login url from idp")
-		}
-
-		tcdata, err := kc.postLoginForm(tcAuthSubmitURL, tcAuthSubmitForm)
-		if err != nil {
-			return "", errors.Wrap(err, "error submitting tencentcloud login form")
-		}
-
-		tcdoc, err := goquery.NewDocumentFromReader(bytes.NewBuffer(tcdata))
-		if err != nil {
-			return "", errors.Wrap(err, "error parsing document")
-		}
-
-		if containsTotpForm(tcdoc) {
-			totpSubmitURL, err := extractSubmitURL(tcdoc)
-			if err != nil {
-				return "", errors.Wrap(err, "unable to locate IDP totp form submit URL")
-			}
-
-			tcdoc, err = kc.postTotpForm(authCtx, totpSubmitURL, tcdoc)
-			if err != nil {
-				return "", errors.Wrap(err, "error posting totp form")
-			}
-		} else if containsWebauthnForm(tcdoc) {
-			credentialIDs, challenge, rpId, err := extractWebauthnParameters(tcdoc)
-			if err != nil {
-				return "", errors.Wrap(err, "could not extract Webauthn parameters")
-			}
-
-			webauthnSubmitURL, err := extractSubmitURL(tcdoc)
-			if err != nil {
-				return "", errors.Wrap(err, "unable to locate IDP Webauthn form submit URL")
-			}
-
-			tcdoc, err = kc.postWebauthnForm(webauthnSubmitURL, credentialIDs, challenge, rpId)
-			if err != nil {
-				return "", errors.Wrap(err, "error posting Webauthn form")
-			}
 		}
 
 		tcSamlResponse, err := extractSamlResponse(tcdoc)
 		if err != nil && authCtx.authenticatorIndexValid && passwordValid(tcdoc) {
 			return kc.doAuthenticate(authCtx, loginDetails)
 		}
-		log.Println("SAML response successfully retrieved for TencentCloud")
-		log.Println(tcSamlResponse)
+		// log.Println("SAML response successfully retrieved for TencentCloud")
+		// log.Println(tcSamlResponse)
 
 		if awsSamlResponse == "" && tcSamlResponse == "" {
 			return "", errors.Wrap(err, "no SAML response retrieved from keycloak")
 		}
 
 		// Return both AWS and TencentCloud SAML responses
-		samlResponses := make(map[string]string)
-		samlResponses["AWS"] = awsSamlResponse
-		samlResponses["TencentCloud"] = tcSamlResponse
+		samlResponses := make(map[cloud.Provider]string)
+		samlResponses[cloud.AWS] = awsSamlResponse
+		samlResponses[cloud.TencentCloud] = tcSamlResponse
 		jsonSamlResponses, err := json.Marshal(samlResponses)
 		if err != nil {
 			return "", errors.Wrap(err, "error marshalling SAML responses from keycloak")
@@ -255,6 +218,21 @@ func (kc *Client) getLoginForm(loginDetails *creds.LoginDetails) (string, url.Va
 	}
 
 	return authSubmitURL, authForm, nil
+}
+
+func (kc *Client) getAdditionalLoginForm(idpUrl string) (*goquery.Document, error) {
+
+	res, err := kc.client.Get(idpUrl)
+	if err != nil {
+		return nil, errors.Wrap(err, "error retrieving second form")
+	}
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to build document from response")
+	}
+
+	return doc, nil
 }
 
 func (kc *Client) postLoginForm(authSubmitURL string, authForm url.Values) ([]byte, error) {

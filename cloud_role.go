@@ -2,25 +2,26 @@ package saml2aws
 
 import (
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
+
+	"github.com/versent/saml2aws/v2/pkg/cloud"
 )
 
 // CloudRole aws role attributes
 type CloudRole struct {
-	Provider     string
+	Provider     cloud.Provider
 	RoleARN      string
 	PrincipalARN string
 	Name         string
 }
 
 // ParseCloudRoles parses and splits the roles while also validating the contents
-func ParseCloudRoles(roles []string, provider string) ([]*CloudRole, error) {
+func ParseCloudRoles(roles []string, cp cloud.Provider) ([]*CloudRole, error) {
 	awsRoles := make([]*CloudRole, len(roles))
 
 	for i, role := range roles {
-		awsRole, err := parseRole(role, provider)
+		awsRole, err := parseRole(role, cp)
 		if err != nil {
 			return nil, err
 		}
@@ -31,18 +32,20 @@ func ParseCloudRoles(roles []string, provider string) ([]*CloudRole, error) {
 	return awsRoles, nil
 }
 
-func parseRole(role, provider string) (*CloudRole, error) {
+func parseRole(role string, cp cloud.Provider) (*CloudRole, error) {
 	var r *regexp.Regexp
-	switch provider {
-	case "AWS":
+	switch cp {
+	case cloud.AWS:
 		r, _ = regexp.Compile("arn:([^:\n]*):([^:\n]*):([^:\n]*):([^:\n]*):(([^:/\n]*)[:/])?([^:,\n]*)")
-	case "TencentCloud":
-		r, _ = regexp.Compile("qcs::([^:\\n]*):([^:\\n]*):([^:\\n]*):([^:/\\n]*)([/]([^,]*)|:([^,\\n]*))\n")
+	case cloud.TencentCloud:
+		r, _ = regexp.Compile("qcs::([^:]*):([^:]*):([^:]*):([^:/]*)(/[^,]*)?")
+
 	default:
-		return nil, fmt.Errorf("Invalid provider: %s", provider)
+		return nil, fmt.Errorf("Invalid provider:")
 	}
 
-	log.Println("Parsing role: ", role)
+	// log.Println("Parsing role: ", role)
+
 	tokens := r.FindAllString(role, -1)
 	if len(tokens) != 2 {
 		return nil, fmt.Errorf("Invalid role string only %d tokens", len(tokens))
@@ -57,7 +60,7 @@ func parseRole(role, provider string) (*CloudRole, error) {
 			providerRole.RoleARN = strings.TrimSpace(token)
 		}
 	}
-	providerRole.Provider = provider
+	providerRole.Provider = cp
 
 	if providerRole.PrincipalARN == "" {
 		return nil, fmt.Errorf("Unable to locate PrincipalARN in: %s", role)
