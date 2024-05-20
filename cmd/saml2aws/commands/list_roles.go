@@ -2,6 +2,7 @@ package commands
 
 import (
 	b64 "encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -89,57 +90,74 @@ func ListRoles(loginFlags *flags.LoginExecFlags) error {
 		}
 	}
 
-	data, err := b64.StdEncoding.DecodeString(samlAssertion)
-	if err != nil {
-		return errors.Wrap(err, "error decoding saml assertion")
+	samlAssertions := make(map[string]string)
+	if loginDetails.TencentCloudURL != "" {
+		// If TencentCloud is configured, unmarshal the SAML assertion for both AWS and TencentCloud
+		if err = json.Unmarshal([]byte(samlAssertion), &samlAssertions); err != nil {
+			return errors.Wrap(err, "error unmarshalling saml assertion. (Devsisters custom implementation)")
+		}
+	} else {
+		// Only AWS is configured, proceed with normal saml2aws flow
+		samlAssertions["AWS"] = samlAssertion
 	}
 
-	roles, err := saml2aws.ExtractAwsRoles(data)
-	if err != nil {
-		return errors.Wrap(err, "error parsing aws roles")
-	}
+	cloudRoles := make([]*saml2aws.CloudRole, 0)
+	for cloud, assertion := range samlAssertions {
+		data, err := b64.StdEncoding.DecodeString(assertion)
+		if err != nil {
+			return errors.Wrap(err, "error decoding SAML assertion.")
+		}
 
-	if len(roles) == 0 {
-		log.Println("No roles to assume")
+		roleArns, err := saml2aws.ExtractCloudRoles(data)
+		if err != nil {
+			return errors.Wrap(err, fmt.Sprintf("error extracting %v role arns.", cloud))
+		}
+		if len(roleArns) == 0 {
+			log.Println("No", cloud, "roles to assume.")
+			continue
+		}
+
+		cloudRoles, err := saml2aws.ParseCloudRoles(roleArns, cloud)
+		if err != nil {
+			return errors.Wrap(err, fmt.Sprintf("error parsing %s roles", cloud))
+		}
+		cloudRoles = append(cloudRoles, cloudRoles...)
+	}
+	if len(cloudRoles) == 0 {
 		os.Exit(1)
 	}
 
-	awsRoles, err := saml2aws.ParseAWSRoles(roles)
-	if err != nil {
-		return errors.Wrap(err, "error parsing aws roles")
-	}
-
-	if err := listRoles(awsRoles, samlAssertion, loginFlags); err != nil {
+	if err := listRoles(cloudRoles, samlAssertions); err != nil {
 		return errors.Wrap(err, "Failed to list roles")
 	}
 
 	return nil
 }
 
-func listRoles(awsRoles []*saml2aws.AWSRole, samlAssertion string, loginFlags *flags.LoginExecFlags) error {
-	if len(awsRoles) == 0 {
-		return errors.New("no roles available")
-	}
+func listRoles(cloudRoles []*saml2aws.CloudRole, samlAssertions map[string]string) error {
+	cloudAccounts := make([]*saml2aws.AWSAccount, 0)
+	for provider, assertion := range samlAssertions {
+		data, err := b64.StdEncoding.DecodeString(assertion)
+		if err != nil {
+			return errors.Wrap(err, "error decoding saml assertion")
+		}
 
-	samlAssertionData, err := b64.StdEncoding.DecodeString(samlAssertion)
-	if err != nil {
-		return errors.Wrap(err, "error decoding saml assertion")
-	}
+		aud, err := saml2aws.ExtractDestinationURL(data)
+		if err != nil {
+			return errors.Wrap(err, "error parsing destination url")
+		}
 
-	aud, err := saml2aws.ExtractDestinationURL(samlAssertionData)
-	if err != nil {
-		return errors.Wrap(err, "error parsing destination url")
-	}
+		accounts, err := saml2aws.ParseAWSAccounts(aud, assertion)
+		if err != nil {
+			return errors.Wrap(err, fmt.Sprintf("error parsing %v role accounts", provider))
+		}
 
-	awsAccounts, err := saml2aws.ParseAWSAccounts(aud, samlAssertion)
-	if err != nil {
-		return errors.Wrap(err, "error parsing aws role accounts")
+		saml2aws.AssignPrincipals(cloudRoles, accounts)
+		cloudAccounts = append(cloudAccounts, accounts...)
 	}
-
-	saml2aws.AssignPrincipals(awsRoles, awsAccounts)
 
 	log.Println("")
-	for _, account := range awsAccounts {
+	for _, account := range cloudAccounts {
 		fmt.Println(account.Name)
 		for _, role := range account.Roles {
 			fmt.Println(role.RoleARN)

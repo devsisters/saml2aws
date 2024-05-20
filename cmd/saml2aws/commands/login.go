@@ -75,7 +75,7 @@ func Login(loginFlags *flags.LoginExecFlags) error {
 		os.Exit(1)
 	}
 
-	logger.WithField("idpAccount", account).Debug("building provider")
+	logger.WithField("idpAccount", account).Debug("building samlProvider")
 
 	provider, err := saml2aws.NewSAMLClient(account)
 	if err != nil {
@@ -130,11 +130,23 @@ func Login(loginFlags *flags.LoginExecFlags) error {
 		}
 	}
 
-	role, err := selectAwsRole(samlAssertion, account)
-	if err != nil {
-		return errors.Wrap(err, "Failed to assume role. Please check whether you are permitted to assume the given role for the AWS service.")
+	log.Println("SAML assertion:", samlAssertion)
+
+	samlAssertions := make(map[string]string)
+	if loginDetails.TencentCloudURL != "" {
+		// If TencentCloud is configured, unmarshal the SAML assertion for both AWS and TencentCloud
+		if err = json.Unmarshal([]byte(samlAssertion), &samlAssertions); err != nil {
+			return errors.Wrap(err, "error unmarshalling saml assertion. (Devsisters custom implementation)")
+		}
+	} else {
+		// Only AWS is configured, proceed with normal saml2aws flow
+		samlAssertions["AWS"] = samlAssertion
 	}
 
+	role, err := selectAwsRole(samlAssertions, account)
+	if err != nil {
+		return errors.Wrap(err, "Error resolving role.")
+	}
 	log.Println("Selected role:", role.RoleARN)
 
 	awsCreds, err := loginToStsUsingRole(account, role, samlAssertion)
@@ -192,7 +204,7 @@ func resolveLoginDetails(account *cfg.IDPAccount, loginFlags *flags.LoginExecFla
 
 	// log.Printf("loginFlags %+v", loginFlags)
 
-	loginDetails := &creds.LoginDetails{URL: account.URL, Username: account.Username, MFAToken: loginFlags.CommonFlags.MFAToken, DuoMFAOption: loginFlags.DuoMFAOption}
+	loginDetails := &creds.LoginDetails{URL: account.URL, TencentCloudURL: account.TencentCloudURL, Username: account.Username, MFAToken: loginFlags.CommonFlags.MFAToken, DuoMFAOption: loginFlags.DuoMFAOption}
 
 	log.Printf("Using IdP Account %s to access %s %s", loginFlags.CommonFlags.IdpAccount, account.Provider, account.URL)
 
@@ -263,69 +275,79 @@ func resolveLoginDetails(account *cfg.IDPAccount, loginFlags *flags.LoginExecFla
 	return loginDetails, nil
 }
 
-func selectAwsRole(samlAssertion string, account *cfg.IDPAccount) (*saml2aws.AWSRole, error) {
-	data, err := b64.StdEncoding.DecodeString(samlAssertion)
-	if err != nil {
-		return nil, errors.Wrap(err, "Error decoding SAML assertion.")
+func selectAwsRole(samlAssertions map[string]string, account *cfg.IDPAccount) (*saml2aws.CloudRole, error) {
+	cloudRoles := make([]*saml2aws.CloudRole, 0)
+	for cloud, assertion := range samlAssertions {
+		data, err := b64.StdEncoding.DecodeString(assertion)
+		if err != nil {
+			return nil, errors.Wrap(err, "Error decoding SAML assertion.")
+		}
+
+		roleArns, err := saml2aws.ExtractCloudRoles(data)
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("Error extracting %v roles arns.", cloud))
+		}
+		if len(roleArns) == 0 {
+			log.Println("No", cloud, "roles to assume.")
+			continue
+		}
+
+		cloudRoles, err := saml2aws.ParseCloudRoles(roleArns, cloud)
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("Error parsing %v roles.", cloud))
+		}
+		cloudRoles = append(cloudRoles, cloudRoles...)
 	}
 
-	roles, err := saml2aws.ExtractAwsRoles(data)
-	if err != nil {
-		return nil, errors.Wrap(err, "Error parsing AWS roles.")
-	}
-
-	if len(roles) == 0 {
-		log.Println("No roles to assume.")
-		log.Println("Please check you are permitted to assume roles for the AWS service.")
+	if len(cloudRoles) == 0 {
+		log.Println("Please check you are permitted to assume roles for the AWS or TencentCloud service.")
 		os.Exit(1)
 	}
 
-	awsRoles, err := saml2aws.ParseAWSRoles(roles)
-	if err != nil {
-		return nil, errors.Wrap(err, "Error parsing AWS roles.")
-	}
-
-	return resolveRole(awsRoles, samlAssertion, account)
+	return resolveRole(cloudRoles, samlAssertions, account)
 }
 
-func resolveRole(awsRoles []*saml2aws.AWSRole, samlAssertion string, account *cfg.IDPAccount) (*saml2aws.AWSRole, error) {
-	var role = new(saml2aws.AWSRole)
-
-	if len(awsRoles) == 1 {
+func resolveRole(cloudRoles []*saml2aws.CloudRole, samlAssertions map[string]string, account *cfg.IDPAccount) (role *saml2aws.CloudRole, err error) {
+	if len(cloudRoles) == 1 {
 		if account.RoleARN != "" {
-			return saml2aws.LocateRole(awsRoles, account.RoleARN)
+			return saml2aws.LocateRole(cloudRoles, account.RoleARN)
 		}
-		return awsRoles[0], nil
-	} else if len(awsRoles) == 0 {
+		return cloudRoles[0], nil
+	} else if len(cloudRoles) == 0 {
 		return nil, errors.New("No roles available.")
 	}
 
-	samlAssertionData, err := b64.StdEncoding.DecodeString(samlAssertion)
-	if err != nil {
-		return nil, errors.Wrap(err, "Error decoding SAML assertion.")
+	cloudAccounts := make([]*saml2aws.AWSAccount, 0)
+	for provider, assertion := range samlAssertions {
+		data, err := b64.StdEncoding.DecodeString(assertion)
+		if err != nil {
+			return nil, errors.Wrap(err, "Error decoding SAML assertion.")
+		}
+
+		aud, err := saml2aws.ExtractDestinationURL(data)
+		if err != nil {
+			return nil, errors.Wrap(err, "Error parsing destination URL.")
+		}
+
+		accounts, err := saml2aws.ParseAWSAccounts(aud, assertion)
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("Error parsing %v role accounts.", provider))
+		}
+
+		saml2aws.AssignPrincipals(cloudRoles, accounts)
+		cloudAccounts = append(cloudAccounts, accounts...)
 	}
 
-	aud, err := saml2aws.ExtractDestinationURL(samlAssertionData)
-	if err != nil {
-		return nil, errors.Wrap(err, "Error parsing destination URL.")
-	}
-
-	awsAccounts, err := saml2aws.ParseAWSAccounts(aud, samlAssertion)
-	if err != nil {
-		return nil, errors.Wrap(err, "Error parsing AWS role accounts.")
-	}
-	if len(awsAccounts) == 0 {
+	if len(cloudAccounts) == 0 {
 		return nil, errors.New("No accounts available.")
 	}
 
-	saml2aws.AssignPrincipals(awsRoles, awsAccounts)
-
 	if account.RoleARN != "" {
-		return saml2aws.LocateRole(awsRoles, account.RoleARN)
+		return saml2aws.LocateRole(cloudRoles, account.RoleARN)
 	}
 
 	for {
-		role, err = saml2aws.PromptForAWSRoleSelection(awsAccounts)
+		role, err = saml2aws.PromptForAWSRoleSelection(cloudAccounts)
 		if err == nil {
 			break
 		}
@@ -335,7 +357,7 @@ func resolveRole(awsRoles []*saml2aws.AWSRole, samlAssertion string, account *cf
 	return role, nil
 }
 
-func loginToStsUsingRole(account *cfg.IDPAccount, role *saml2aws.AWSRole, samlAssertion string) (*awsconfig.AWSCredentials, error) {
+func loginToStsUsingRole(account *cfg.IDPAccount, role *saml2aws.CloudRole, samlAssertion string) (*awsconfig.AWSCredentials, error) {
 
 	sess, err := session.NewSession(&aws.Config{
 		Region: &account.Region,

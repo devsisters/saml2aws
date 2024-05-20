@@ -89,9 +89,9 @@ func PromptForLoginDetails(loginDetails *creds.LoginDetails, provider string) er
 }
 
 // PromptForAWSRoleSelection present a list of roles to the user for selection
-func PromptForAWSRoleSelection(accounts []*AWSAccount) (*AWSRole, error) {
+func PromptForAWSRoleSelection(accounts []*AWSAccount) (*CloudRole, error) {
 
-	roles := map[string]*AWSRole{}
+	roles := map[string]*CloudRole{}
 	var roleOptions []string
 
 	for _, account := range accounts {

@@ -3,6 +3,7 @@ package keycloak
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -57,57 +58,131 @@ func (kc *Client) Authenticate(loginDetails *creds.LoginDetails) (string, error)
 	return kc.doAuthenticate(&authContext{loginDetails.MFAToken, 0, true}, loginDetails)
 }
 
+// XXX(changwon): Retrieve "multiple" SAML responses from all configured providers
 func (kc *Client) doAuthenticate(authCtx *authContext, loginDetails *creds.LoginDetails) (string, error) {
-	authSubmitURL, authForm, err := kc.getLoginForm(loginDetails)
+	awsAuthSubmitURL, awsAuthSubmitForm, err := kc.getLoginForm(loginDetails)
 	if err != nil {
-		return "", errors.Wrap(err, "error retrieving login form from idp")
+		return "", errors.Wrap(err, "error retrieving aws login form from idp")
+	}
+	if awsAuthSubmitURL == "" {
+		return "", errors.Wrap(err, "error retrieving aws login url from idp")
 	}
 
-	data, err := kc.postLoginForm(authSubmitURL, authForm)
+	awsdata, err := kc.postLoginForm(awsAuthSubmitURL, awsAuthSubmitForm)
 	if err != nil {
-		return "", fmt.Errorf("error submitting login form")
-	}
-	if authSubmitURL == "" {
-		return "", fmt.Errorf("error submitting login form")
+		return "", errors.Wrap(err, "error submitting aws login form")
 	}
 
-	doc, err := goquery.NewDocumentFromReader(bytes.NewBuffer(data))
+	awsdoc, err := goquery.NewDocumentFromReader(bytes.NewBuffer(awsdata))
 	if err != nil {
 		return "", errors.Wrap(err, "error parsing document")
 	}
 
-	if containsTotpForm(doc) {
-		totpSubmitURL, err := extractSubmitURL(doc)
+	if containsTotpForm(awsdoc) {
+		totpSubmitURL, err := extractSubmitURL(awsdoc)
 		if err != nil {
 			return "", errors.Wrap(err, "unable to locate IDP totp form submit URL")
 		}
 
-		doc, err = kc.postTotpForm(authCtx, totpSubmitURL, doc)
+		awsdoc, err = kc.postTotpForm(authCtx, totpSubmitURL, awsdoc)
 		if err != nil {
 			return "", errors.Wrap(err, "error posting totp form")
 		}
-	} else if containsWebauthnForm(doc) {
-		credentialIDs, challenge, rpId, err := extractWebauthnParameters(doc)
+	} else if containsWebauthnForm(awsdoc) {
+		credentialIDs, challenge, rpId, err := extractWebauthnParameters(awsdoc)
 		if err != nil {
 			return "", errors.Wrap(err, "could not extract Webauthn parameters")
 		}
 
-		webauthnSubmitURL, err := extractSubmitURL(doc)
+		webauthnSubmitURL, err := extractSubmitURL(awsdoc)
 		if err != nil {
 			return "", errors.Wrap(err, "unable to locate IDP Webauthn form submit URL")
 		}
 
-		doc, err = kc.postWebauthnForm(webauthnSubmitURL, credentialIDs, challenge, rpId)
+		awsdoc, err = kc.postWebauthnForm(webauthnSubmitURL, credentialIDs, challenge, rpId)
 		if err != nil {
 			return "", errors.Wrap(err, "error posting Webauthn form")
 		}
 	}
 
-	samlResponse, err := extractSamlResponse(doc)
-	if err != nil && authCtx.authenticatorIndexValid && passwordValid(doc) {
+	awsSamlResponse, err := extractSamlResponse(awsdoc)
+	if err != nil && authCtx.authenticatorIndexValid && passwordValid(awsdoc) {
 		return kc.doAuthenticate(authCtx, loginDetails)
 	}
-	return samlResponse, err
+	log.Println("SAML response successfully retrieved for AWS")
+	log.Println(awsSamlResponse)
+
+	// If configured, retrieve TencentCloud SAML Response with the same authCtx
+	if loginDetails.TencentCloudURL != "" {
+		tcAuthSubmitURL, tcAuthSubmitForm, err := kc.getLoginForm(loginDetails)
+		if err != nil {
+			return "", errors.Wrap(err, "error retrieving tencentcloud login form from idp")
+		}
+		if tcAuthSubmitURL == "" {
+			return "", errors.Wrap(err, "error retrieving tencentcloud login url from idp")
+		}
+
+		tcdata, err := kc.postLoginForm(tcAuthSubmitURL, tcAuthSubmitForm)
+		if err != nil {
+			return "", errors.Wrap(err, "error submitting tencentcloud login form")
+		}
+
+		tcdoc, err := goquery.NewDocumentFromReader(bytes.NewBuffer(tcdata))
+		if err != nil {
+			return "", errors.Wrap(err, "error parsing document")
+		}
+
+		if containsTotpForm(tcdoc) {
+			totpSubmitURL, err := extractSubmitURL(tcdoc)
+			if err != nil {
+				return "", errors.Wrap(err, "unable to locate IDP totp form submit URL")
+			}
+
+			tcdoc, err = kc.postTotpForm(authCtx, totpSubmitURL, tcdoc)
+			if err != nil {
+				return "", errors.Wrap(err, "error posting totp form")
+			}
+		} else if containsWebauthnForm(tcdoc) {
+			credentialIDs, challenge, rpId, err := extractWebauthnParameters(tcdoc)
+			if err != nil {
+				return "", errors.Wrap(err, "could not extract Webauthn parameters")
+			}
+
+			webauthnSubmitURL, err := extractSubmitURL(tcdoc)
+			if err != nil {
+				return "", errors.Wrap(err, "unable to locate IDP Webauthn form submit URL")
+			}
+
+			tcdoc, err = kc.postWebauthnForm(webauthnSubmitURL, credentialIDs, challenge, rpId)
+			if err != nil {
+				return "", errors.Wrap(err, "error posting Webauthn form")
+			}
+		}
+
+		tcSamlResponse, err := extractSamlResponse(tcdoc)
+		if err != nil && authCtx.authenticatorIndexValid && passwordValid(tcdoc) {
+			return kc.doAuthenticate(authCtx, loginDetails)
+		}
+		log.Println("SAML response successfully retrieved for TencentCloud")
+		log.Println(tcSamlResponse)
+
+		if awsSamlResponse == "" && tcSamlResponse == "" {
+			return "", errors.Wrap(err, "no SAML response retrieved from keycloak")
+		}
+
+		// Return both AWS and TencentCloud SAML responses
+		samlResponses := make(map[string]string)
+		samlResponses["AWS"] = awsSamlResponse
+		samlResponses["TencentCloud"] = tcSamlResponse
+		jsonSamlResponses, err := json.Marshal(samlResponses)
+		if err != nil {
+			return "", errors.Wrap(err, "error marshalling SAML responses from keycloak")
+		}
+		return string(jsonSamlResponses), err
+	}
+
+	// Return normally
+	return awsSamlResponse, err
 }
 
 func extractWebauthnParameters(doc *goquery.Document) (credentialIDs []string, challenge string, rpID string, err error) {
@@ -210,6 +285,8 @@ func (kc *Client) postTotpForm(authCtx *authContext, totpSubmitURL string, doc *
 
 	if authCtx.mfaToken == "" {
 		authCtx.mfaToken = prompter.RequestSecurityCode("000000")
+	} else {
+		log.Println("MFA token already provided")
 	}
 
 	doc.Find("input").Each(func(i int, s *goquery.Selection) {

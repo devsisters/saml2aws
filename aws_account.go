@@ -14,7 +14,7 @@ import (
 // AWSAccount holds the AWS account name and roles
 type AWSAccount struct {
 	Name  string
-	Roles []*AWSRole
+	Roles []*CloudRole
 }
 
 // ParseAWSAccounts extract the aws accounts from the saml assertion
@@ -45,7 +45,7 @@ func ExtractAWSAccounts(data []byte) ([]*AWSAccount, error) {
 		account := new(AWSAccount)
 		account.Name = s.Find("div.saml-account-name").Text()
 		s.Find("label").Each(func(i int, s *goquery.Selection) {
-			role := new(AWSRole)
+			role := new(CloudRole)
 			role.Name = s.Text()
 			role.RoleARN, _ = s.Attr("for")
 			account.Roles = append(account.Roles, role)
@@ -57,7 +57,7 @@ func ExtractAWSAccounts(data []byte) ([]*AWSAccount, error) {
 }
 
 // AssignPrincipals assign principal from roles
-func AssignPrincipals(awsRoles []*AWSRole, awsAccounts []*AWSAccount) {
+func AssignPrincipals(awsRoles []*CloudRole, awsAccounts []*AWSAccount) {
 
 	awsPrincipalARNs := make(map[string]string)
 	for _, awsRole := range awsRoles {
@@ -73,7 +73,7 @@ func AssignPrincipals(awsRoles []*AWSRole, awsAccounts []*AWSAccount) {
 }
 
 // LocateRole locate role by name
-func LocateRole(awsRoles []*AWSRole, roleName string) (*AWSRole, error) {
+func LocateRole(awsRoles []*CloudRole, roleName string) (*CloudRole, error) {
 	for _, awsRole := range awsRoles {
 		if awsRole.RoleARN == roleName {
 			return awsRole, nil

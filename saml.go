@@ -2,6 +2,7 @@ package saml2aws
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 	"time"
 
@@ -52,7 +53,7 @@ func ExtractSessionDuration(data []byte) (int64, error) {
 
 	// log.Printf("tag: %s", assertionElement.Tag)
 
-	//Get the actual assertion attributes
+	// Get the actual assertion attributes
 	attributeStatement := assertionElement.FindElement(childPath(assertionElement.Space, attributeStatementTag))
 	if attributeStatement == nil {
 		return 0, ErrMissingElement{Tag: attributeStatementTag}
@@ -133,51 +134,57 @@ func ExtractMFATokenExpiryTime(data []byte) (time.Time, error) {
 	return time.Parse(time.RFC3339, ValidUntilString)
 }
 
-// ExtractAwsRoles given an assertion document extract the aws roles
-func ExtractAwsRoles(data []byte) ([]string, error) {
-
-	awsroles := []string{}
+// ExtractCloudRoles given an assertion document extract the aws roles
+func ExtractCloudRoles(data []byte) ([]string, error) {
+	cloudroles := []string{}
 
 	doc := etree.NewDocument()
 	if err := doc.ReadFromBytes(data); err != nil {
-		return awsroles, err
+		return cloudroles, err
 	}
 
-	// log.Printf("root tag: %s", doc.Root().Tag)
+	log.Printf("root tag: %s", doc.Root().Tag)
 
 	assertionElement := doc.FindElement(".//Assertion")
 	if assertionElement == nil {
 		return nil, ErrMissingAssertion
 	}
 
-	// log.Printf("tag: %s", assertionElement.Tag)
+	log.Printf("tag: %s", assertionElement.Tag)
 
-	//Get the actual assertion attributes
+	// Get the actual assertion attributes
 	attributeStatement := assertionElement.FindElement(childPath(assertionElement.Space, attributeStatementTag))
 	if attributeStatement == nil {
 		return nil, ErrMissingElement{Tag: attributeStatementTag}
 	}
 
-	// log.Printf("tag: %s", attributeStatement.Tag)
+	log.Printf("tag: %s", attributeStatement.Tag)
 
 	attributes := attributeStatement.FindElements(childPath(assertionElement.Space, attributeTag))
 	for _, attribute := range attributes {
-		if attribute.SelectAttrValue("Name", "") != "https://aws.amazon.com/SAML/Attributes/Role" {
+		if attribute.SelectAttrValue("Name", "") != "https://aws.amazon.com/SAML/Attributes/Role" && attribute.SelectAttrValue("Name", "") != "https://cloud.tencent.com/SAML/Attributes/Role" {
 			continue
 		}
+
+		if attribute.SelectAttrValue("Name", "") == "https://aws.amazon.com/SAML/Attributes/Role" {
+			log.Printf("found aws assertion")
+		} else if attribute.SelectAttrValue("Name", "") == "https://cloud.tencent.com/SAML/Attributes/Role" {
+			log.Printf("found tencent assertion")
+		}
+
 		atributeValues := attribute.FindElements(childPath(assertionElement.Space, attributeValueTag))
 		for _, attrValue := range atributeValues {
-			awsroles = append(awsroles, attrValue.Text())
+			cloudroles = append(cloudroles, attrValue.Text())
 		}
 	}
 
-	return awsroles, nil
+	return cloudroles, nil
 }
 
 func childPath(space, tag string) string {
 	if space == "" {
 		return "./" + tag
 	}
-	//log.Printf("query = %s", "./"+space+":"+tag)
+	// log.Printf("query = %s", "./"+space+":"+tag)
 	return "./" + space + ":" + tag
 }
