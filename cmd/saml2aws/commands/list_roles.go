@@ -125,11 +125,11 @@ func ListRoles(loginFlags *flags.LoginExecFlags) error {
 		cloudRoles = append(cloudRoles, roles...)
 
 		for _, role := range roles {
-			fmt.Println(fmt.Sprintf("%v (%v)", role.RoleARN, cloud))
+			log.Println(fmt.Sprintf("%v (%v)", role.RoleARN, cloud))
 		}
 	}
 	if len(cloudRoles) == 0 {
-		fmt.Println("No cloud provider roles to assume")
+		log.Println("No cloud provider roles to assume")
 		os.Exit(1)
 	}
 

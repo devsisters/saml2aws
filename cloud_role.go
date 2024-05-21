@@ -14,6 +14,7 @@ type CloudRole struct {
 	RoleARN      string
 	PrincipalARN string
 	Name         string
+	Account      string
 }
 
 // ParseCloudRoles parses and splits the roles while also validating the contents
@@ -58,6 +59,12 @@ func parseRole(role string, cp cloud.Provider) (*CloudRole, error) {
 		}
 		if strings.Contains(token, ":role") {
 			providerRole.RoleARN = strings.TrimSpace(token)
+			if cp == cloud.AWS {
+				providerRole.Name = strings.Split(token, "/")[1]
+			} else if cp == cloud.TencentCloud {
+				providerRole.Name = strings.Split(token, "/")[2]
+				providerRole.Account = strings.Split(strings.Split(token, "/")[1], ":")[0]
+			}
 		}
 	}
 	providerRole.Provider = cp
