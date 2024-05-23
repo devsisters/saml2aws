@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 
@@ -53,7 +52,7 @@ func AssignAWSAccounts(awsRoles []*CloudRole, samlXml []byte, samlAssertion stri
 		s.Find("label").Each(func(i int, s *goquery.Selection) {
 			arn, _ := s.Attr("for")
 			roleArnMap[arn].Account = name
-			log.Println("Marked role", arn, "as belonging to account", name)
+			// log.Println("Marked role", arn, "as belonging to account", name)
 		})
 	})
 

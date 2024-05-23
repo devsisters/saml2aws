@@ -7,13 +7,15 @@ import (
 	"log"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"github.com/tencentcloud/tencentcloud-sdk-go-intl-en/tencentcloud/common"
+	"github.com/tencentcloud/tencentcloud-sdk-go-intl-en/tencentcloud/common/profile"
+	tcsts "github.com/tencentcloud/tencentcloud-sdk-go-intl-en/tencentcloud/sts/v20180813"
 	"github.com/versent/saml2aws/v2"
 	"github.com/versent/saml2aws/v2/helper/credentials"
 	"github.com/versent/saml2aws/v2/pkg/awsconfig"
@@ -22,6 +24,7 @@ import (
 	"github.com/versent/saml2aws/v2/pkg/creds"
 	"github.com/versent/saml2aws/v2/pkg/flags"
 	"github.com/versent/saml2aws/v2/pkg/samlcache"
+	"github.com/versent/saml2aws/v2/pkg/tcconfig"
 )
 
 // Login login to ADFS
@@ -34,46 +37,15 @@ func Login(loginFlags *flags.LoginExecFlags) error {
 		return errors.Wrap(err, "Error building login details.")
 	}
 
-	sharedCreds := awsconfig.NewSharedCredentials(account.Profile, account.CredentialsFile)
 	// creates a cacheProvider, only used when --cache is set
 	cacheProvider := &samlcache.SAMLCacheProvider{
 		Account:  account.Name,
 		Filename: account.SAMLCacheFile,
 	}
 
-	logger.Debug("Check if creds exist.")
-
-	// this checks if the credentials file has been created yet
-	exist, err := sharedCreds.CredsExists()
-	if err != nil {
-		return errors.Wrap(err, "Error loading credentials.")
-	}
-	if !exist {
-		log.Println("Unable to load credentials. Login required to create them.")
-		return nil
-	}
-
-	if !sharedCreds.Expired() && !loginFlags.Force {
-		logger.Debug("Credentials are not expired. Skipping.")
-		previousCreds, err := sharedCreds.Load()
-		if err != nil {
-			log.Println("Unable to load cached credentials.")
-		} else {
-			logger.Debug("Credentials will expire at ", previousCreds.Expires)
-		}
-		if loginFlags.CredentialProcess {
-			err = PrintCredentialProcess(previousCreds)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
 	loginDetails, err := resolveLoginDetails(account, loginFlags)
 	if err != nil {
-		log.Printf("%+v", err)
-		os.Exit(1)
+		return err
 	}
 
 	logger.WithField("idpAccount", account).Debug("building samlProvider")
@@ -121,7 +93,7 @@ func Login(loginFlags *flags.LoginExecFlags) error {
 		log.Println("Response did not contain a valid SAML assertion.")
 		log.Println("Please check that your username and password is correct.")
 		log.Println("To see the output follow the instructions in https://github.com/versent/saml2aws#debugging-issues-with-idps")
-		os.Exit(1)
+		return errors.New("Response did not contain a valid SAML assertion.")
 	}
 
 	if !loginFlags.CommonFlags.DisableKeychain {
@@ -144,36 +116,49 @@ func Login(loginFlags *flags.LoginExecFlags) error {
 		samlAssertions[cloud.AWS] = samlAssertion
 	}
 
-	role, err := selectAwsRole(samlAssertions, account)
+	role, err := selectCloudRole(samlAssertions, account)
 	if err != nil {
 		return errors.Wrap(err, "Error resolving role.")
 	}
 	log.Println("Selected role:", role.RoleARN)
 
-	awsCreds, err := loginToStsUsingRole(account, role, samlAssertion)
-	if err != nil {
-		return errors.Wrap(err, "Error logging into AWS role using SAML assertion.")
-	}
-
-	// print credential process if needed
-	if loginFlags.CredentialProcess {
-		err = PrintCredentialProcess(awsCreds)
+	switch role.Provider {
+	case cloud.AWS:
+		creds, err := assumeAwsRoleWithSAML(account, role, samlAssertions[role.Provider])
 		if err != nil {
-			return err
+			return errors.Wrap(err, "Error logging into AWS role using SAML assertion.")
 		}
-	} else {
-		err = saveCredentials(awsCreds, sharedCreds)
-		if err != nil {
+		cp := awsconfig.NewSharedCredentials(account.Profile, account.CredentialsFile)
+		if err := cp.Save(creds); err != nil {
 			return err
 		}
 
-		log.Println("Logged in as:", awsCreds.PrincipalARN)
+		log.Println("Logged in as:", creds.PrincipalARN)
 		log.Println("")
 		log.Println("Your new access key pair has been stored in the AWS configuration.")
-		log.Printf("Note that it will expire at %v", awsCreds.Expires)
-		if sharedCreds.Profile != "default" {
-			log.Println("To use this credential, call the AWS CLI with the --profile option (e.g. aws --profile", sharedCreds.Profile, "ec2 describe-instances).")
+		log.Printf("Note that it will expire at %v", creds.Expires)
+		if account.Profile != "default" {
+			log.Println("To use this credential, call the AWS CLI with the --profile option (e.g. aws --profile", account.Profile, "ec2 describe-instances).")
 		}
+	case cloud.TencentCloud:
+		creds, err := assumeTencentRoleWithSAML(account, role, samlAssertions[role.Provider])
+		if err != nil {
+			return errors.Wrap(err, "Error logging into TencentCloud role using SAML assertion.")
+		}
+		cp := tcconfig.NewSharedCredentials(account.Profile, account.CredentialsFile)
+		if err := cp.Save(creds); err != nil {
+			return err
+		}
+
+		log.Println("Logged in as:", creds.PrincipalARN)
+		log.Println("")
+		log.Println("Your new secret key pair has been stored in the TencentCloud configuration.")
+		log.Printf("Note that it will expire at %v", creds.Expires)
+		if account.Profile != "default" {
+			log.Println("To use this credential, call the TC CLI with the --profile option (e.g. tccli --profile", account.Profile, "cvm DescribeInstances).")
+		}
+	default:
+		return errors.Wrap(err, "Error resolving role (unknown provider).")
 	}
 
 	return nil
@@ -193,8 +178,7 @@ func buildIdpAccount(loginFlags *flags.LoginExecFlags) (*cfg.IDPAccount, error) 
 	// update username and hostname if supplied
 	flags.ApplyFlagOverrides(loginFlags.CommonFlags, account)
 
-	err = account.Validate()
-	if err != nil {
+	if err := account.Validate(); err != nil {
 		return nil, errors.Wrap(err, "Failed to validate account.")
 	}
 
@@ -276,7 +260,7 @@ func resolveLoginDetails(account *cfg.IDPAccount, loginFlags *flags.LoginExecFla
 	return loginDetails, nil
 }
 
-func selectAwsRole(samlAssertions map[cloud.Provider]string, account *cfg.IDPAccount) (*saml2aws.CloudRole, error) {
+func selectCloudRole(samlAssertions map[cloud.Provider]string, account *cfg.IDPAccount) (*saml2aws.CloudRole, error) {
 	cloudRoles := make([]*saml2aws.CloudRole, 0)
 	for cloudProvider, assertion := range samlAssertions {
 		data, err := b64.StdEncoding.DecodeString(assertion)
@@ -337,7 +321,7 @@ func resolveRole(cloudRoles []*saml2aws.CloudRole, account *cfg.IDPAccount) (rol
 	return role, nil
 }
 
-func loginToStsUsingRole(account *cfg.IDPAccount, role *saml2aws.CloudRole, samlAssertion string) (*awsconfig.AWSCredentials, error) {
+func assumeAwsRoleWithSAML(account *cfg.IDPAccount, role *saml2aws.CloudRole, samlAssertion string) (*awsconfig.AWSCredentials, error) {
 
 	sess, err := session.NewSession(&aws.Config{
 		Region: &account.Region,
@@ -373,50 +357,109 @@ func loginToStsUsingRole(account *cfg.IDPAccount, role *saml2aws.CloudRole, saml
 	}, nil
 }
 
-func saveCredentials(awsCreds *awsconfig.AWSCredentials, sharedCreds *awsconfig.CredentialsProvider) error {
-	err := sharedCreds.Save(awsCreds)
+func assumeTencentRoleWithSAML(account *cfg.IDPAccount, role *saml2aws.CloudRole, samlAssertion string) (*tcconfig.TCCredentials, error) {
+
+	credential := common.NewCredential("", "")
+
+	clientProfile := profile.NewClientProfile()
+
+	client, err := tcsts.NewClient(credential, "", clientProfile)
 	if err != nil {
-		return errors.Wrap(err, "Error saving credentials.")
+		log.Fatalf("Failed to create sts client: %v", err)
+	}
+	region, ok := convertAWSRegionToTencentCloud(account.Region)
+	if !ok {
+		log.Println("Selected region %v is unknown or not available in TencentCloud. Selecting %v in best effort.", account.Region, region)
+	}
+	client.Init(region)
+
+	log.Println("Requesting TencentCloud credentials using SAML assertion.")
+
+	samlRequest := tcsts.NewAssumeRoleWithSAMLRequest()
+	sessionDuration := uint64(account.SessionDuration)
+	samlRequest.SAMLAssertion = &samlAssertion
+	samlRequest.PrincipalArn = &role.PrincipalARN
+	samlRequest.RoleArn = &role.RoleARN
+	samlRequest.DurationSeconds = &sessionDuration
+	samlRequest.RoleSessionName = &account.Username
+
+	// log.Println(fmt.Sprintf("tccli sts AssumeRoleWithSAML --PrincipalArn %v --RoleArn %v --SAMLAssertion %v --DurationSeconds %v --RoleSessionName %v", role.PrincipalARN, role.RoleARN, samlAssertion, sessionDuration, account.Username))
+
+	resp, err := client.AssumeRoleWithSAML(samlRequest)
+	if err != nil {
+		return nil, errors.Wrap(err, "Error retrieving STS credentials using SAML.")
 	}
 
-	return nil
+	return &tcconfig.TCCredentials{
+		SecretID:     aws.StringValue(resp.Response.Credentials.TmpSecretId),
+		SecretKey:    aws.StringValue(resp.Response.Credentials.TmpSecretKey),
+		Token:        aws.StringValue(resp.Response.Credentials.Token),
+		Region:       account.Region,
+		Expires:      aws.StringValue(resp.Response.Expiration),
+		PrincipalARN: role.PrincipalARN,
+	}, nil
 }
 
-// CredentialsToCredentialProcess
-// Returns a Json output that is compatible with the AWS credential_process
-// https://github.com/awslabs/awsprocesscreds
-func CredentialsToCredentialProcess(awsCreds *awsconfig.AWSCredentials) (string, error) {
-
-	type AWSCredentialProcess struct {
-		Version         int
-		AccessKeyId     string
-		SecretAccessKey string
-		SessionToken    string
-		Expiration      string
+// convertAWSRegionToTencentCloud converts AWS regions to TencentCloud regions. Returns the TencentCloud region and a boolean indicating if the region is directly supported in TencentCloud.
+func convertAWSRegionToTencentCloud(region string) (string, bool) {
+	switch region {
+	case "us-east-1":
+		return "na-ashburn", true
+	case "us-east-2":
+		return "na-toronto", true
+	case "us-west-1":
+		return "na-siliconvalley", true
+	case "us-west-2":
+		return "na-siliconvalley", false
+	case "af-south-1":
+		return "ap-mumbai", false
+	case "ap-east-1":
+		return "ap-hongkong", true
+	case "ap-south-1":
+		return "ap-mumbai", true
+	case "ap-south-2":
+		return "ap-mumbai", false
+	case "ap-southeast-1":
+		return "ap-singapore", true
+	case "ap-southeast-2":
+		return "ap-jakarta", false
+	case "ap-southeast-3":
+		return "ap-jakarta", true
+	case "ap-southeast-4":
+		return "ap-jakarta", false
+	case "ap-northeast-1":
+		return "ap-tokyo", true
+	case "ap-northeast-2":
+		return "ap-seoul", true
+	case "ap-northeast-3":
+		return "ap-tokyo", false
+	case "ca-central-1":
+		return "na-toronto", false
+	case "ca-west-1":
+		return "na-siliconvalley", false
+	case "eu-central-1":
+		return "eu-frankfurt", true
+	case "eu-central-2":
+		return "eu-frankfurt", false
+	case "eu-west-1":
+		return "eu-frankfurt", false
+	case "eu-west-2":
+		return "eu-frankfurt", false
+	case "eu-south-1":
+		return "eu-frankfurt", false
+	case "eu-south-2":
+		return "eu-frankfurt", false
+	case "eu-north-1":
+		return "eu-frankfurt", false
+	case "il-central-1":
+		return "ap-mumbai", false
+	case "me-south-1":
+		return "ap-mumbai", false
+	case "me-central-1":
+		return "ap-mumbai", false
+	case "sa-east-1":
+		return "sa-saopaulo", true
+	default:
+		return "ap-tokyo", false
 	}
-
-	cred_process := AWSCredentialProcess{
-		Version:         1,
-		AccessKeyId:     awsCreds.AWSAccessKey,
-		SecretAccessKey: awsCreds.AWSSecretKey,
-		SessionToken:    awsCreds.AWSSessionToken,
-		Expiration:      awsCreds.Expires.Format(time.RFC3339),
-	}
-
-	p, err := json.Marshal(cred_process)
-	if err != nil {
-		return "", errors.Wrap(err, "Error while marshalling the credential process.")
-	}
-	return string(p), nil
-
-}
-
-// PrintCredentialProcess Prints a Json output that is compatible with the AWS credential_process
-// https://github.com/awslabs/awsprocesscreds
-func PrintCredentialProcess(awsCreds *awsconfig.AWSCredentials) error {
-	jsonData, err := CredentialsToCredentialProcess(awsCreds)
-	if err == nil {
-		fmt.Println(jsonData)
-	}
-	return err
 }
