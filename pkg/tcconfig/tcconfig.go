@@ -2,7 +2,6 @@ package tcconfig
 
 import (
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -97,7 +96,7 @@ func (p *CredentialsProvider) locateConfigFile() (string, error) {
 		if name, err = homedir.Expand("~/.tccli/" + p.Profile + ".credential"); err != nil {
 			return "", ErrCredentialsHomeNotFound
 		}
-		log.Println("config file:", name)
+		// log.Println("config file:", name)
 	}
 
 	if name, err = resolveSymlink(name); err != nil {
