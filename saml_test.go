@@ -12,7 +12,7 @@ func TestExtractAwsRoles(t *testing.T) {
 	data, err := os.ReadFile("testdata/assertion.xml")
 	assert.Nil(t, err)
 
-	roles, err := ExtractAwsRoles(data)
+	roles, err := ExtractCloudRoles(data)
 	assert.Nil(t, err)
 	assert.Len(t, roles, 2)
 }
@@ -21,7 +21,7 @@ func TestExtractAwsRolesFail(t *testing.T) {
 	data, err := os.ReadFile("testdata/notxml.xml")
 	assert.Nil(t, err)
 
-	_, err = ExtractAwsRoles(data)
+	_, err = ExtractCloudRoles(data)
 	assert.Error(t, err)
 }
 

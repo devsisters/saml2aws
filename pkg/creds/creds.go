@@ -11,6 +11,7 @@ type LoginDetails struct {
 	MFAToken          string
 	DuoMFAOption      string
 	URL               string
+	TencentCloudURL   string
 	StateToken        string // used by Okta
 	OktaSessionCookie string // used by Okta
 }

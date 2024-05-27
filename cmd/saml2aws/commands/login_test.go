@@ -65,13 +65,13 @@ func TestOktaResolveLoginDetailsWithFlags(t *testing.T) {
 
 func TestResolveRoleSingleEntry(t *testing.T) {
 
-	adminRole := &saml2aws.AWSRole{
+	adminRole := &saml2aws.CloudRole{
 		Name:         "admin",
 		RoleARN:      "arn:aws:iam::456456456456:saml-provider/example-idp,arn:aws:iam::456456456456:role/admin",
 		PrincipalARN: "arn:aws:iam::456456456456:role/admin,arn:aws:iam::456456456456:saml-provider/example-idp",
 	}
 
-	awsRoles := []*saml2aws.AWSRole{
+	awsRoles := []*saml2aws.CloudRole{
 		adminRole,
 	}
 

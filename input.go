@@ -3,7 +3,6 @@ package saml2aws
 import (
 	"fmt"
 	"log"
-	"sort"
 
 	"github.com/pkg/errors"
 	"github.com/versent/saml2aws/v2/pkg/cfg"
@@ -40,6 +39,7 @@ func PromptForConfigurationDetails(idpAccount *cfg.IDPAccount) error {
 	idpAccount.Profile = prompter.String("AWS Profile", idpAccount.Profile)
 
 	idpAccount.URL = prompter.String("URL", idpAccount.URL)
+	idpAccount.TencentCloudURL = prompter.String("TencentCloud URL (Optional)", idpAccount.TencentCloudURL)
 	idpAccount.Username = prompter.String("Username", idpAccount.Username)
 
 	switch idpAccount.Provider {
@@ -87,26 +87,21 @@ func PromptForLoginDetails(loginDetails *creds.LoginDetails, provider string) er
 	return nil
 }
 
-// PromptForAWSRoleSelection present a list of roles to the user for selection
-func PromptForAWSRoleSelection(accounts []*AWSAccount) (*AWSRole, error) {
+// PromptForCloudRoleSelections present a list of roles to the user for selection
+func PromptForCloudRoleSelection(roles []*CloudRole) (*CloudRole, error) {
 
-	roles := map[string]*AWSRole{}
-	var roleOptions []string
-
-	for _, account := range accounts {
-		for _, role := range account.Roles {
-			name := fmt.Sprintf("%s / %s", account.Name, role.Name)
-			roles[name] = role
-			roleOptions = append(roleOptions, name)
-		}
+	roleMap := make(map[string]*CloudRole)
+	roleOptions := make([]string, len(roles))
+	for i, role := range roles {
+		name := fmt.Sprintf("%s %s / %s", role.Provider, role.Account, role.Name)
+		roleOptions[i] = name
+		roleMap[name] = role
 	}
-
-	sort.Strings(roleOptions)
 
 	selectedRole, err := prompter.ChooseWithDefault("Please choose the role", roleOptions[0], roleOptions)
 	if err != nil {
 		return nil, errors.Wrap(err, "Role selection failed")
 	}
 
-	return roles[selectedRole], nil
+	return roleMap[selectedRole], nil
 }

@@ -36,16 +36,16 @@ func TestExtractAWSAccounts(t *testing.T) {
 }
 
 func TestAssignPrincipals(t *testing.T) {
-	awsRoles := []*AWSRole{
+	awsRoles := []*CloudRole{
 		{
 			PrincipalARN: "arn:aws:iam::000000000001:saml-provider/test-idp",
 			RoleARN:      "arn:aws:iam::000000000001:role/Development",
 		},
 	}
 
-	awsAccounts := []*AWSAccount{
+	awsAccounts := []*CloudAccount{
 		{
-			Roles: []*AWSRole{
+			Roles: []*CloudRole{
 				{
 					RoleARN: "arn:aws:iam::000000000001:role/Development",
 				},
@@ -59,7 +59,7 @@ func TestAssignPrincipals(t *testing.T) {
 }
 
 func TestLocateRole(t *testing.T) {
-	awsRoles := []*AWSRole{
+	awsRoles := []*CloudRole{
 		{
 			PrincipalARN: "arn:aws:iam::000000000001:saml-provider/test-idp",
 			RoleARN:      "arn:aws:iam::000000000001:role/Development",

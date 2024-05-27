@@ -37,6 +37,7 @@ type IDPAccount struct {
 	Name                  string `ini:"name"`
 	AppID                 string `ini:"app_id"` // used by OneLogin and AzureAD
 	URL                   string `ini:"url"`
+	TencentCloudURL       string `ini:"tencentcloud_url"`
 	Username              string `ini:"username"`
 	Provider              string `ini:"provider"`
 	BrowserType           string `ini:"browser_type,omitempty"`            // used by 'Browser' Provider
@@ -89,6 +90,7 @@ func (ia IDPAccount) String() string {
 
 	return fmt.Sprintf(`account {%s%s%s
   URL: %s
+  TencentCloudURL: %s
   Username: %s
   Provider: %s
   MFA: %s
@@ -98,7 +100,7 @@ func (ia IDPAccount) String() string {
   Profile: %s
   RoleARN: %s
   Region: %s
-}`, appID, policyID, oktaCfg, ia.URL, ia.Username, ia.Provider, ia.MFA, ia.SkipVerify, ia.AmazonWebservicesURN, ia.SessionDuration, ia.Profile, ia.RoleARN, ia.Region)
+}`, appID, policyID, oktaCfg, ia.URL, ia.TencentCloudURL, ia.Username, ia.Provider, ia.MFA, ia.SkipVerify, ia.AmazonWebservicesURN, ia.SessionDuration, ia.Profile, ia.RoleARN, ia.Region)
 }
 
 // Validate validate the required / expected fields are set
