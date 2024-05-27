@@ -263,8 +263,6 @@ func (kc *Client) postTotpForm(authCtx *authContext, totpSubmitURL string, doc *
 
 	if authCtx.mfaToken == "" {
 		authCtx.mfaToken = prompter.RequestSecurityCode("000000")
-	} else {
-		log.Println("MFA token already provided")
 	}
 
 	doc.Find("input").Each(func(i int, s *goquery.Selection) {
