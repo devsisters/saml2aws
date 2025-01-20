@@ -21,3 +21,6 @@ bin/
 # direnv
 .envrc
 .buildtemp
+
+# nix build result
+result
