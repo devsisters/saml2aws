@@ -8,7 +8,5 @@ buildGoModule {
   env = {
     CGO_ENABLED = "0";
   };
-  subPackages = [
-    "cmd/saml2aws"
-  ];
+  subPackages = [ "cmd/saml2aws" ];
 }
