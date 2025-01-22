@@ -310,6 +310,10 @@ func resolveRole(cloudRoles []*saml2aws.CloudRole, account *cfg.IDPAccount) (rol
 		return nil, errors.New("No roles available.")
 	}
 
+	if account.RoleARN != "" {
+		return saml2aws.LocateRole(cloudRoles, account.RoleARN)
+	}
+
 	for {
 		role, err = saml2aws.PromptForCloudRoleSelection(cloudRoles)
 		if err == nil {

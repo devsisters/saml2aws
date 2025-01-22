@@ -15,6 +15,6 @@ buildGoModule rec {
     "-X main.Version=${version}"
   ];
 
-  vendorHash = "sha256-pml6M45IJXfeOiMcPq8K88LxQFR/WmOzQXwGXHGOCew";
+  vendorHash = "sha256-pml6M45IJXfeOiMcPq8K88LxQFR/WmOzQXwGXHGOCew=";
   subPackages = [ "cmd/saml2aws" ];
 }
