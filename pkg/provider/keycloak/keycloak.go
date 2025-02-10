@@ -109,8 +109,11 @@ func (kc *Client) doAuthenticate(authCtx *authContext, loginDetails *creds.Login
 	}
 
 	awsSamlResponse, err := extractSamlResponse(awsdoc)
-	if err != nil && authCtx.authenticatorIndexValid && passwordValid(awsdoc) {
-		return kc.doAuthenticate(authCtx, loginDetails)
+	if err != nil {
+		if authCtx.authenticatorIndexValid && passwordValid(awsdoc) {
+			return kc.doAuthenticate(authCtx, loginDetails)
+		}
+		return awsSamlResponse, err
 	}
 	// log.Println("SAML response successfully retrieved for AWS")
 	// log.Println(awsSamlResponse)
