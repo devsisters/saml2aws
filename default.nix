@@ -1,13 +1,16 @@
-{ buildGoModule, stdenv, darwin, ... }:
+{
+  buildGoModule,
+  stdenv,
+  darwin,
+  ...
+}:
 
 buildGoModule rec {
   name = "saml2aws";
   version = "2.36.14-tencent";
   src = ./.;
 
-  buildInputs = [] ++ (if stdenv.hostPlatform.isDarwin then [
-    darwin.apple_sdk.frameworks.AppKit
-  ] else []);
+  buildInputs = [ ];
 
   ldflags = [
     "-s"
