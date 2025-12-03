@@ -39,6 +39,13 @@ type authContext struct {
 	authenticatorIndexValid bool
 }
 
+// authenticatorOption represents an available MFA method in Keycloak
+type authenticatorOption struct {
+	execID      string
+	displayName string
+	helpText    string
+}
+
 // New create a new KeyCloakClient
 func New(idpAccount *cfg.IDPAccount) (*Client, error) {
 
@@ -81,31 +88,10 @@ func (kc *Client) doAuthenticate(authCtx *authContext, loginDetails *creds.Login
 		return "", errors.Wrap(err, "error parsing document")
 	}
 
-	if containsTotpForm(awsdoc) {
-		totpSubmitURL, err := extractSubmitURL(awsdoc)
-		if err != nil {
-			return "", errors.Wrap(err, "unable to locate IDP totp form submit URL")
-		}
-
-		awsdoc, err = kc.postTotpForm(authCtx, totpSubmitURL, awsdoc)
-		if err != nil {
-			return "", errors.Wrap(err, "error posting totp form")
-		}
-	} else if containsWebauthnForm(awsdoc) {
-		credentialIDs, challenge, rpId, err := extractWebauthnParameters(awsdoc)
-		if err != nil {
-			return "", errors.Wrap(err, "could not extract Webauthn parameters")
-		}
-
-		webauthnSubmitURL, err := extractSubmitURL(awsdoc)
-		if err != nil {
-			return "", errors.Wrap(err, "unable to locate IDP Webauthn form submit URL")
-		}
-
-		awsdoc, err = kc.postWebauthnForm(webauthnSubmitURL, credentialIDs, challenge, rpId)
-		if err != nil {
-			return "", errors.Wrap(err, "error posting Webauthn form")
-		}
+	// Handle MFA - may involve selection if multiple methods available
+	awsdoc, err = kc.handleMFA(authCtx, awsdoc)
+	if err != nil {
+		return "", err
 	}
 
 	awsSamlResponse, err := extractSamlResponse(awsdoc)
@@ -186,6 +172,98 @@ func extractWebauthnParameters(doc *goquery.Document) (credentialIDs []string, c
 		rpID = rpIDSubmatch[1]
 	})
 	return credentialIDs, challenge, rpID, nil
+}
+
+// handleMFA processes MFA challenges, including selection when multiple methods are available
+func (kc *Client) handleMFA(authCtx *authContext, doc *goquery.Document) (*goquery.Document, error) {
+	// Check if we're on a page with "try another way" option and user might want to select
+	if containsTryAnotherWayForm(doc) {
+		// Check if there's also a direct MFA form - if so, show selection
+		hasTOTP := containsTotpForm(doc)
+		hasWebauthn := containsWebauthnForm(doc)
+
+		if hasTOTP || hasWebauthn {
+			// Ask user if they want to use the current method or select another
+			currentMethod := "TOTP"
+			if hasWebauthn {
+				currentMethod = "Security Key (WebAuthn)"
+			}
+
+			options := []string{
+				fmt.Sprintf("Use %s (current)", currentMethod),
+				"Select another method",
+			}
+			choice := prompter.Choose("Multiple MFA methods available", options)
+
+			if choice == 1 {
+				// User wants to select another method
+				var err error
+				doc, err = kc.postTryAnotherWayForm(doc)
+				if err != nil {
+					return nil, errors.Wrap(err, "error navigating to method selection")
+				}
+			}
+		}
+	}
+
+	// Handle authenticator selection page
+	if containsAuthenticatorSelectionForm(doc) {
+		options := extractAuthenticatorOptions(doc)
+		if len(options) == 0 {
+			return nil, errors.New("authenticator selection page found but no options available")
+		}
+
+		// Build option list for prompter
+		var optionLabels []string
+		for _, opt := range options {
+			label := opt.displayName
+			if opt.helpText != "" {
+				label = fmt.Sprintf("%s (%s)", opt.displayName, opt.helpText)
+			}
+			optionLabels = append(optionLabels, label)
+		}
+
+		choice := prompter.Choose("Select MFA method", optionLabels)
+		selectedOption := options[choice]
+
+		logger.Debugf("Selected authenticator: %s (execID: %s)", selectedOption.displayName, selectedOption.execID)
+
+		var err error
+		doc, err = kc.postAuthenticatorSelectionForm(doc, selectedOption.execID)
+		if err != nil {
+			return nil, errors.Wrap(err, "error selecting authenticator")
+		}
+	}
+
+	// Now handle the actual MFA form
+	if containsTotpForm(doc) {
+		totpSubmitURL, err := extractSubmitURL(doc)
+		if err != nil {
+			return nil, errors.Wrap(err, "unable to locate IDP totp form submit URL")
+		}
+
+		doc, err = kc.postTotpForm(authCtx, totpSubmitURL, doc)
+		if err != nil {
+			return nil, errors.Wrap(err, "error posting totp form")
+		}
+	} else if containsWebauthnForm(doc) {
+		credentialIDs, challenge, rpId, err := extractWebauthnParameters(doc)
+		if err != nil {
+			return nil, errors.Wrap(err, "could not extract Webauthn parameters")
+		}
+
+		webauthnSubmitURL, err := extractSubmitURL(doc)
+		if err != nil {
+			return nil, errors.Wrap(err, "unable to locate IDP Webauthn form submit URL")
+		}
+
+		doc, err = kc.postWebauthnForm(webauthnSubmitURL, credentialIDs, challenge, rpId)
+		if err != nil {
+			return nil, errors.Wrap(err, "error posting Webauthn form")
+		}
+	}
+
+	return doc, nil
 }
 
 func (kc *Client) getLoginForm(loginDetails *creds.LoginDetails) (string, url.Values, error) {
@@ -295,6 +373,71 @@ func (kc *Client) postTotpForm(authCtx *authContext, totpSubmitURL string, doc *
 	}
 
 	return doc, nil
+}
+
+// postTryAnotherWayForm submits the "try another way" form to get to the authenticator selection page
+func (kc *Client) postTryAnotherWayForm(doc *goquery.Document) (*goquery.Document, error) {
+	submitURL, err := extractFormAction(doc, "kc-select-try-another-way-form")
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to locate try another way form action")
+	}
+
+	form := url.Values{}
+	form.Set("tryAnotherWay", "on")
+
+	req, err := http.NewRequest("POST", submitURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, errors.Wrap(err, "error building try another way request")
+	}
+
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	res, err := kc.client.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "error submitting try another way form")
+	}
+
+	return goquery.NewDocumentFromReader(res.Body)
+}
+
+// postAuthenticatorSelectionForm submits the selected authenticator to proceed to that MFA method
+func (kc *Client) postAuthenticatorSelectionForm(doc *goquery.Document, execID string) (*goquery.Document, error) {
+	submitURL, err := extractFormAction(doc, "kc-select-credential-form")
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to locate authenticator selection form action")
+	}
+
+	form := url.Values{}
+	form.Set("authenticationExecution", execID)
+
+	req, err := http.NewRequest("POST", submitURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, errors.Wrap(err, "error building authenticator selection request")
+	}
+
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	res, err := kc.client.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "error submitting authenticator selection form")
+	}
+
+	return goquery.NewDocumentFromReader(res.Body)
+}
+
+// extractFormAction gets the action URL from a form by ID
+func extractFormAction(doc *goquery.Document, formID string) (string, error) {
+	form := doc.Find("form#" + formID)
+	if form.Index() == -1 {
+		return "", fmt.Errorf("form #%s not found", formID)
+	}
+
+	action, ok := form.Attr("action")
+	if !ok || action == "" {
+		return "", fmt.Errorf("form #%s has no action attribute", formID)
+	}
+
+	return action, nil
 }
 
 func (kc *Client) postWebauthnForm(webauthnSubmitURL string, credentialIDs []string, challenge, rpId string) (*goquery.Document, error) {
@@ -441,6 +584,51 @@ func containsWebauthnForm(doc *goquery.Document) bool {
 	return doc.Find("form#webauth").Index() != -1
 }
 
+// containsTryAnotherWayForm checks if Keycloak is showing a "try another way" link
+func containsTryAnotherWayForm(doc *goquery.Document) bool {
+	return doc.Find("form#kc-select-try-another-way-form").Index() != -1
+}
+
+// containsAuthenticatorSelectionForm checks if we're on the authenticator selection page
+func containsAuthenticatorSelectionForm(doc *goquery.Document) bool {
+	return doc.Find("form#kc-select-credential-form").Index() != -1
+}
+
+// extractAuthenticatorOptions parses available MFA methods from the selection page
+func extractAuthenticatorOptions(doc *goquery.Document) []authenticatorOption {
+	var options []authenticatorOption
+
+	doc.Find("form#kc-select-credential-form button[name=authenticationExecution]").Each(func(i int, s *goquery.Selection) {
+		execID, ok := s.Attr("value")
+		if !ok {
+			return
+		}
+
+		// Extract display name from the heading element
+		displayName := strings.TrimSpace(s.Find("div, span").First().Text())
+		if displayName == "" {
+			displayName = fmt.Sprintf("Option %d", i+1)
+		}
+
+		// Try to get help text if available
+		helpText := ""
+		s.Find("div").Each(func(j int, div *goquery.Selection) {
+			text := strings.TrimSpace(div.Text())
+			if text != "" && text != displayName {
+				helpText = text
+			}
+		})
+
+		options = append(options, authenticatorOption{
+			execID:      execID,
+			displayName: displayName,
+			helpText:    helpText,
+		})
+	})
+
+	return options
+}
+
 func updateKeyCloakFormData(authForm url.Values, s *goquery.Selection, user *creds.LoginDetails) {
 	name, ok := s.Attr("name")
 	// log.Printf("name = %s ok = %v", name, ok)
@@ -453,7 +641,7 @@ func updateKeyCloakFormData(authForm url.Values, s *goquery.Selection, user *cre
 	} else if strings.Contains(lname, "password") {
 		authForm.Add(name, user.Password)
 	} else if strings.Contains(lname, "tryanotherway") {
-		logger.Debug("Ignoring other ways to log in (not implemented)")
+		// Handled by handleMFA - skip adding to form
 	} else {
 		// pass through any hidden fields
 		val, ok := s.Attr("value")
